@@ -1,39 +1,64 @@
+# dem_utils.py
 import requests
 import rasterio
 import numpy as np
 from rasterio.mask import mask
-from shapely.geometry import mapping
+from shapely.geometry import mapping, Polygon, LinearRing
 from shapely.validation import make_valid
 from shapely.ops import unary_union
-import streamlit as st
 from PIL import Image
+import streamlit as st
 
 
-# FIX INVALID GEOMETRIES
 def clean_geometry(geom):
+    """Make geometry valid, extract polygons, and ensure rings are closed."""
+    if geom is None:
+        return None
+
+    # Make valid (fix self-intersections etc)
     if not geom.is_valid:
         geom = make_valid(geom)
+
+    # If GeometryCollection -> merge polygons
     if geom.geom_type == "GeometryCollection":
-        geom = unary_union([g for g in geom if g.geom_type == "Polygon"])
+        polys = [g for g in geom if g.geom_type == "Polygon"]
+        if not polys:
+            return None
+        geom = unary_union(polys)
+
+    # If MultiPolygon or Polygon, ensure outer rings are closed
+    if geom.geom_type == "Polygon":
+        exterior = geom.exterior
+        if not LinearRing(exterior.coords).is_closed:
+            coords = list(exterior.coords)
+            if coords[0] != coords[-1]:
+                coords.append(coords[0])
+            geom = Polygon(coords, [list(i.coords) for i in geom.interiors])
+    # For MultiPolygon, shapely.make_valid/unary_union above will typically fix rings
+
     return geom
 
 
-# FIX BOUNDING BOX ORDER
 def safe_bbox(geom):
+    """Return bbox as (west, south, east, north) with correct ordering."""
     minx, miny, maxx, maxy = geom.bounds
-    return (
-        min(minx, maxx),  # west
-        min(miny, maxy),  # south
-        max(minx, maxx),  # east
-        max(miny, maxy),  # north
-    )
+    west = min(minx, maxx)
+    east = max(minx, maxx)
+    south = min(miny, maxy)
+    north = max(miny, maxy)
+    return (west, south, east, north)
 
 
-# DOWNLOAD DEM FROM OPENTOPOGRAPHY
 def download_dem_from_opentopo(bbox, out_path="dem.tif"):
+    """Download SRTMGL1 from OpenTopography using API key in Streamlit secrets."""
+    if "OPENTOPO_API_KEY" not in st.secrets:
+        st.error("Missing OPENTOPO_API_KEY in Streamlit secrets.")
+        return None
+
     api_key = st.secrets["OPENTOPO_API_KEY"]
     west, south, east, north = bbox
 
+    # Build URL
     url = (
         "https://portal.opentopography.org/API/globaldem?"
         f"demtype=SRTMGL1&south={south}&north={north}"
@@ -41,40 +66,81 @@ def download_dem_from_opentopo(bbox, out_path="dem.tif"):
         f"&API_Key={api_key}"
     )
 
-    r = requests.get(url)
+    # Debug (will appear in Streamlit logs)
+    st.write("Requesting DEM:", url)
 
-    if r.status_code != 200:
-        st.error(f"OpenTopo Error {r.status_code}: {r.text}")
+    try:
+        r = requests.get(url, timeout=120)
+    except Exception as e:
+        st.error(f"DEM request failed: {e}")
         return None
 
-    open(out_path, "wb").write(r.content)
+    if r.status_code != 200:
+        st.error(f"OpenTopography error {r.status_code}: {r.text}")
+        return None
+
+    with open(out_path, "wb") as f:
+        f.write(r.content)
+
     return out_path
 
 
-# PROCESS SLOPE + CLASSIFY + GENERATE RASTER
 def process_slope_raster(geom):
+    """
+    1) Clean geometry
+    2) Download DEM for bbox
+    3) Clip DEM to polygon
+    4) Compute slope in degrees
+    5) Classify into 8-degree bins
+    6) Save slope PNG and slope.pgw (worldfile)
+    Returns path to PNG or None on failure.
+    """
 
     geom = clean_geometry(geom)
-    bbox = safe_bbox(geom)
-
-    dem_file = download_dem_from_opentopo(bbox)
-    if dem_file is None:
+    if geom is None:
+        st.error("Invalid geometry after cleaning.")
         return None
 
-    with rasterio.open(dem_file) as src:
-        dem_img, transform = mask(src, [mapping(geom)], crop=True)
+    bbox = safe_bbox(geom)
 
+    dem_path = download_dem_from_opentopo(bbox, out_path="dem.tif")
+    if dem_path is None:
+        return None
+
+    try:
+        with rasterio.open(dem_path) as src:
+            dem_img, out_transform = mask(src, [mapping(geom)], crop=True)
+    except Exception as e:
+        st.error(f"Failed to clip DEM: {e}")
+        return None
+
+    # single band DEM
     dem = dem_img[0].astype(float)
 
-    # SLOPE CALCULATION
+    # handle nodata values if any
+    dem[dem == src.nodata] = np.nan
+    # simple fill: replace nan with nearest valid (very small AOIs may still work)
+    if np.isnan(dem).any():
+        # fill nan with local mean to avoid crashes (quick heuristic)
+        nan_mask = np.isnan(dem)
+        if nan_mask.all():
+            st.error("DEM contains only nodata after clipping.")
+            return None
+        dem[nan_mask] = np.nanmean(dem[~nan_mask])
+
+    # compute gradient in map units (approx) and slope in degrees
     gy, gx = np.gradient(dem)
     slope = np.degrees(np.arctan(np.sqrt(gx**2 + gy**2)))
 
-    # SLOPE INTO 8° BINS
-    classes = np.floor(slope / 8).astype(int)
+    # classify into 8-degree bins: class = floor(slope/8)
+    classes = np.floor(slope / 8.0).astype(int)
     classes[classes < 0] = 0
 
-    # FIXED COLOR TABLE FOR SLOPE CLASSES
+    # cap classes above 8 into 8 (8 means >64°)
+    classes_clipped = classes.copy()
+    classes_clipped[classes_clipped > 8] = 8
+
+    # fixed color table (RGB)
     COLOR_TABLE = [
         (173, 216, 230),  # 0: Light Blue
         (144, 238, 144),  # 1: Light Green
@@ -84,28 +150,31 @@ def process_slope_raster(geom):
         (255, 0, 0),      # 5: Red
         (139, 0, 0),      # 6: Dark Red
         (128, 0, 128),    # 7: Purple
-        (0, 0, 0),        # 8+: Black
+        (0, 0, 0),        # 8: Black (>64°)
     ]
 
-    max_class = classes.max()
-    if max_class > 8:
-        max_class = 8
-
-    # BUILD RGB ARRAY
-    h, w = classes.shape
+    h, w = classes_clipped.shape
     rgb = np.zeros((h, w, 3), dtype=np.uint8)
 
-    for i in range(max_class + 1):
-        rgb[classes == i] = COLOR_TABLE[i]
+    for idx, color in enumerate(COLOR_TABLE):
+        rgb[classes_clipped == idx] = color
 
-    rgb[classes > 8] = COLOR_TABLE[8]
+    # Save PNG
+    png_path = "slope.png"
+    Image.fromarray(rgb).save(png_path, "PNG")
 
-    # SAVE PNG
-    img = Image.fromarray(rgb)
-    img.save("slope.png", "PNG")
+    # Save worldfile (.pgw) for georeferencing:
+    # Using the same order used by other code: A, D, B, E, C, F
+    # We keep prior convention: transform[0],0,0,-transform[4], transform[2], transform[5]
+    try:
+        with open("slope.pgw", "w") as wf:
+            wf.write(f"{out_transform[0]}\n")
+            wf.write("0.0\n")
+            wf.write("0.0\n")
+            wf.write(f"{-out_transform[4]}\n")
+            wf.write(f"{out_transform[2]}\n")
+            wf.write(f"{out_transform[5]}\n")
+    except Exception as e:
+        st.warning(f"Could not write worldfile: {e}")
 
-    # WORLD FILE
-    with open("slope.pgw", "w") as f:
-        f.write(f"{transform[0]}\n0\n0\n{-transform[4]}\n{transform[2]}\n{transform[5]}")
-
-    return "slope.png"
+    return png_path
