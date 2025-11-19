@@ -89,7 +89,7 @@ def download_dem_from_opentopo(bbox, out_path="dem.tif"):
 
 
 # ---------------------------------------------------------
-# Process AOI → Clip DEM → Calculate Slope → Classify → Save PNG + PGW
+# Process AOI → Clip DEM → Calculate Slope → Classify → Save PNG + PGW + DEBUG OUTPUT
 # ---------------------------------------------------------
 def process_slope_raster(geom):
 
@@ -159,12 +159,14 @@ def process_slope_raster(geom):
     png_path = "slope.png"
     Image.fromarray(rgb).save(png_path, "PNG")
 
-    # ----- Correct WorldFile using array_bounds -----
+    # ---------------------------------------------------------
+    # CORRECT WORLD FILE USING array_bounds (BEST POSSIBLE FIX)
+    # ---------------------------------------------------------
     bounds = array_bounds(h, w, out_transform)
-    bottom, left, top, right = bounds  # rasterio order: (bottom, left, top, right)
+    bottom, left, top, right = bounds  # rasterio order
 
-    pixel_width = out_transform.a            # positive
-    pixel_height = out_transform.e           # negative
+    pixel_width = out_transform.a      # positive
+    pixel_height = out_transform.e     # negative
 
     # CENTER of top-left pixel
     X_center = left + (pixel_width / 2)
@@ -178,4 +180,21 @@ def process_slope_raster(geom):
         wf.write(f"{X_center}\n")
         wf.write(f"{Y_center}\n")
 
+    # ---------------------------------------------------------
+    # DEBUG DEBUG DEBUG — REQUIRED TO SOLVE YOUR ISSUE
+    # ---------------------------------------------------------
+    st.warning("DEBUG MODE: Download slope files and send to me")
+
+    st.write("Transform:", out_transform)
+    st.write("Bounds (bottom, left, top, right):", bounds)
+    st.write("PNG shape (h, w, 3):", rgb.shape)
+    st.write("Slope class min/max:", int(classes.min()), int(classes.max()))
+
+    with open("slope.png", "rb") as f:
+        st.download_button("Download slope.png (debug)", f, file_name="slope.png")
+
+    with open("slope.pgw", "rb") as f:
+        st.download_button("Download slope.pgw (debug)", f, file_name="slope.pgw")
+
+    # return PNG path
     return png_path
