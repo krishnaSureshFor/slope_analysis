@@ -5,15 +5,12 @@ from rasterio.mask import mask
 from shapely.geometry import mapping
 from shapely.validation import make_valid
 from shapely.ops import unary_union
-from shapely.geometry import Polygon
-from skimage import measure
-import simplekml
-import geopandas as gpd
 import streamlit as st
+from PIL import Image
 
 
+# FIX INVALID GEOMETRIES
 def clean_geometry(geom):
-    """Fix invalid polygons automatically."""
     if not geom.is_valid:
         geom = make_valid(geom)
     if geom.geom_type == "GeometryCollection":
@@ -21,21 +18,20 @@ def clean_geometry(geom):
     return geom
 
 
+# FIX BOUNDING BOX ORDER
 def safe_bbox(geom):
-    """Ensure bbox has valid north/south/east/west ordering."""
     minx, miny, maxx, maxy = geom.bounds
+    return (
+        min(minx, maxx),  # west
+        min(miny, maxy),  # south
+        max(minx, maxx),  # east
+        max(miny, maxy),  # north
+    )
 
-    south = min(miny, maxy)
-    north = max(miny, maxy)
-    west = min(minx, maxx)
-    east = max(minx, maxx)
 
-    return west, south, east, north
-
-
+# DOWNLOAD DEM FROM OPENTOPOGRAPHY
 def download_dem_from_opentopo(bbox, out_path="dem.tif"):
     api_key = st.secrets["OPENTOPO_API_KEY"]
-
     west, south, east, north = bbox
 
     url = (
@@ -45,24 +41,20 @@ def download_dem_from_opentopo(bbox, out_path="dem.tif"):
         f"&API_Key={api_key}"
     )
 
-    # Debug
-    st.write("DEM URL:", url)
-
     r = requests.get(url)
 
     if r.status_code != 200:
-        st.error(f"OpenTopography Error {r.status_code}: {r.text}")
+        st.error(f"OpenTopo Error {r.status_code}: {r.text}")
         return None
 
-    with open(out_path, "wb") as f:
-        f.write(r.content)
-
+    open(out_path, "wb").write(r.content)
     return out_path
 
 
-def detect_flat_areas_from_polygon(geom, slope_threshold=0.5):
-    geom = clean_geometry(geom)
+# PROCESS SLOPE + CLASSIFY + GENERATE RASTER
+def process_slope_raster(geom):
 
+    geom = clean_geometry(geom)
     bbox = safe_bbox(geom)
 
     dem_file = download_dem_from_opentopo(bbox)
@@ -74,23 +66,46 @@ def detect_flat_areas_from_polygon(geom, slope_threshold=0.5):
 
     dem = dem_img[0].astype(float)
 
+    # SLOPE CALCULATION
     gy, gx = np.gradient(dem)
-    slope = np.sqrt(gx**2 + gy**2)
+    slope = np.degrees(np.arctan(np.sqrt(gx**2 + gy**2)))
 
-    flat_mask = slope < slope_threshold
+    # SLOPE INTO 8° BINS
+    classes = np.floor(slope / 8).astype(int)
+    classes[classes < 0] = 0
 
-    kml = simplekml.Kml()
-    contours = measure.find_contours(flat_mask, 0.5)
+    # FIXED COLOR TABLE FOR SLOPE CLASSES
+    COLOR_TABLE = [
+        (173, 216, 230),  # 0: Light Blue
+        (144, 238, 144),  # 1: Light Green
+        (0, 100, 0),      # 2: Dark Green
+        (255, 255, 102),  # 3: Yellow
+        (255, 165, 0),    # 4: Orange
+        (255, 0, 0),      # 5: Red
+        (139, 0, 0),      # 6: Dark Red
+        (128, 0, 128),    # 7: Purple
+        (0, 0, 0),        # 8+: Black
+    ]
 
-    for contour in contours:
-        coords = []
-        for y, x in contour:
-            lon, lat = rasterio.transform.xy(transform, y, x)
-            coords.append((lon, lat))
+    max_class = classes.max()
+    if max_class > 8:
+        max_class = 8
 
-        pol = kml.newpolygon(name="Flat Area")
-        pol.outerboundaryis = coords
+    # BUILD RGB ARRAY
+    h, w = classes.shape
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
 
-    out = "flat_areas.kml"
-    kml.save(out)
-    return out
+    for i in range(max_class + 1):
+        rgb[classes == i] = COLOR_TABLE[i]
+
+    rgb[classes > 8] = COLOR_TABLE[8]
+
+    # SAVE PNG
+    img = Image.fromarray(rgb)
+    img.save("slope.png", "PNG")
+
+    # WORLD FILE
+    with open("slope.pgw", "w") as f:
+        f.write(f"{transform[0]}\n0\n0\n{-transform[4]}\n{transform[2]}\n{transform[5]}")
+
+    return "slope.png"
