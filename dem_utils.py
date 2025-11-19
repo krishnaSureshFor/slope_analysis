@@ -6,20 +6,25 @@ from shapely.geometry import mapping
 from skimage import measure
 import simplekml
 import geopandas as gpd
+import streamlit as st
 
 
 def download_dem_from_opentopo(bbox, out_path="dem.tif"):
-    dataset = "SRTMGL1"  # 30m DEM
+    api_key = st.secrets["OPENTOPO_API_KEY"]
+
+    dataset = "SRTMGL1"
 
     url = (
         "https://portal.opentopography.org/API/globaldem?"
         f"demtype={dataset}&south={bbox[1]}&north={bbox[3]}"
-        f"&west={bbox[0]}&east={bbox[2]}&outputFormat=GTiff"
+        f"&west={bbox[0]}&east={bbox[2]}"
+        f"&outputFormat=GTiff&API_Key={api_key}"
     )
 
     r = requests.get(url)
+
     if r.status_code != 200:
-        raise Exception("DEM download failed")
+        raise Exception(f"DEM download failed: {r.status_code} - {r.text}")
 
     with open(out_path, "wb") as f:
         f.write(r.content)
