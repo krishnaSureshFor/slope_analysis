@@ -167,27 +167,29 @@ def process_slope_raster(geom):
     # Using the same order used by other code: A, D, B, E, C, F
     # We keep prior convention: transform[0],0,0,-transform[4], transform[2], transform[5]
     try:
-        # Correct ESRI Worldfile parameters
-        A = out_transform.a
-        D = out_transform.b
-        B = out_transform.d
-        E = out_transform.e
+        # Correct ESRI Worldfile parameters using Rasterio affine transform
+        A = out_transform.a      # pixel width
+        D = out_transform.b      # row rotation
+        B = out_transform.d      # column rotation
+        E = out_transform.e      # pixel height
         
-        # IMPORTANT: center of top-left pixel
+        # IMPORTANT: worldfile expects CENTER of the upper-left pixel
         C = out_transform.c + (out_transform.a / 2)
         F = out_transform.f + (out_transform.e / 2)
         
         with open("slope.pgw", "w") as wf:
-            f.write(f"{A}\n")   # pixel width
-            f.write(f"{D}\n")   # row rotation
-            f.write(f"{B}\n")   # column rotation
-            f.write(f"{E}\n")   # pixel height
-            f.write(f"{C}\n")   # X center of upper-left pixel
-            f.write(f"{F}\n")   # Y center of upper-left pixel
+            wf.write(f"{A}\n")   # pixel width
+            wf.write(f"{D}\n")   # row rotation
+            wf.write(f"{B}\n")   # column rotation
+            wf.write(f"{E}\n")   # pixel height
+            wf.write(f"{C}\n")   # X of upper-left pixel center
+            wf.write(f"{F}\n")   # Y of upper-left pixel center
+
 
     except Exception as e:
         st.warning(f"Could not write worldfile: {e}")
 
     return png_path
+
 
 
