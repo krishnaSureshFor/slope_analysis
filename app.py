@@ -46,24 +46,48 @@ if geom is not None and st.button("Generate Slope Map"):
 
         st.success("Slope map created.")
 
-        # Show map
+        # -----------------------------
+        # Create map
+        # -----------------------------
         centroid = [geom.centroid.y, geom.centroid.x]
         m2 = leafmap.Map(center=centroid, zoom=13)
         m2.add_basemap("HYBRID")
 
-        # Add slope raster
+        # -----------------------------
+        # Fix bounds format
+        # -----------------------------
+        # result["bounds"] = [[min_lat, min_lon], [max_lat, max_lon]]
+        min_lat, min_lon = result["bounds"][0]
+        max_lat, max_lon = result["bounds"][1]
+
+        # Swap if reversed
+        if min_lat > max_lat:
+            min_lat, max_lat = max_lat, min_lat
+        if min_lon > max_lon:
+            min_lon, max_lon = max_lon, min_lon
+
+        bounds = [[min_lat, min_lon], [max_lat, max_lon]]
+
+        # -----------------------------
+        # Add slope raster overlay
+        # -----------------------------
         folium.raster_layers.ImageOverlay(
             image=result["data_url"],
-            bounds=result["bounds"],
-            opacity=1.0,            # FULL opacity (max visibility)
+            bounds=bounds,
+            opacity=1.0,
             interactive=True,
             cross_origin=False,
         ).add_to(m2)
 
-
-        # Add boundary
+        # -----------------------------
+        # Add AOI boundary
+        # -----------------------------
         gdf = gpd.GeoDataFrame(geometry=[geom], crs="EPSG:4326")
         m2.add_gdf(gdf, layer_name="AOI")
 
+        # -----------------------------
+        # Show map
+        # -----------------------------
         m2.to_streamlit(height=600)
+
 
