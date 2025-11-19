@@ -175,23 +175,25 @@ def process_slope_raster(geom):
     # ---------------------------------------------------------
     # CORRECT WORLD FILE USING array_bounds (BEST POSSIBLE FIX)
     # ---------------------------------------------------------
+    # Compute correct geographic bounds
     bounds = array_bounds(h, w, out_transform)
-    bottom, left, top, right = bounds  # rasterio order
-
-    pixel_width = out_transform.a      # positive
-    pixel_height = out_transform.e     # negative
-
-    # CENTER of top-left pixel
-    X_center = left + (pixel_width / 2)
-    Y_center = top + (pixel_height / 2)
-
+    # BUT array_bounds returns (minY, minX, maxY, maxX) NOT (bottom,left,top,right)
+    minY, minX, maxY, maxX = bounds
+    
+    pixel_width = out_transform.a      # +0.000277777
+    pixel_height = out_transform.e     # -0.000277777
+    
+    # Worldfile wants upper-left pixel CENTER:
+    X_center = minX + (pixel_width / 2)
+    Y_center = maxY + (pixel_height / 2)
+    
     with open("slope.pgw", "w") as wf:
-        wf.write(f"{pixel_width}\n")
-        wf.write("0.0\n")
-        wf.write("0.0\n")
-        wf.write(f"{pixel_height}\n")
-        wf.write(f"{X_center}\n")
-        wf.write(f"{Y_center}\n")
+        wf.write(f"{pixel_width}\n")     # line 1
+        wf.write("0.0\n")                # line 2
+        wf.write("0.0\n")                # line 3
+        wf.write(f"{pixel_height}\n")    # line 4
+        wf.write(f"{X_center}\n")        # line 5  (lon)
+        wf.write(f"{Y_center}\n")        # line 6  (lat)
 
     # ---------------------------------------------------------
     # DEBUG DEBUG DEBUG — REQUIRED TO SOLVE YOUR ISSUE
@@ -211,4 +213,5 @@ def process_slope_raster(geom):
 
     # return PNG path
     return png_path
+
 
