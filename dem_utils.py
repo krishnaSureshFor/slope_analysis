@@ -177,7 +177,7 @@ def process_slope_raster(geom):
         C = out_transform.c + (out_transform.a / 2)
         F = out_transform.f + (out_transform.e / 2)
         
-        with open("slope.pgw", "w") as f:
+        with open("slope.pgw", "w") as wf:
             f.write(f"{A}\n")   # pixel width
             f.write(f"{D}\n")   # row rotation
             f.write(f"{B}\n")   # column rotation
@@ -189,4 +189,5 @@ def process_slope_raster(geom):
         st.warning(f"Could not write worldfile: {e}")
 
     return png_path
+
 
