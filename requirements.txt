@@ -10,5 +10,3 @@ simplekml
 leafmap
 folium
 streamlit_js_eval
-leafmap>=0.32.0
-folium>=0.14
