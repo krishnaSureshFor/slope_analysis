@@ -167,14 +167,26 @@ def process_slope_raster(geom):
     # Using the same order used by other code: A, D, B, E, C, F
     # We keep prior convention: transform[0],0,0,-transform[4], transform[2], transform[5]
     try:
-        with open("slope.pgw", "w") as wf:
-            wf.write(f"{out_transform[0]}\n")
-            wf.write("0.0\n")
-            wf.write("0.0\n")
-            wf.write(f"{-out_transform[4]}\n")
-            wf.write(f"{out_transform[2]}\n")
-            wf.write(f"{out_transform[5]}\n")
+        # Correct ESRI Worldfile parameters
+        A = out_transform.a
+        D = out_transform.b
+        B = out_transform.d
+        E = out_transform.e
+        
+        # IMPORTANT: center of top-left pixel
+        C = out_transform.c + (out_transform.a / 2)
+        F = out_transform.f + (out_transform.e / 2)
+        
+        with open("slope.pgw", "w") as f:
+            f.write(f"{A}\n")   # pixel width
+            f.write(f"{D}\n")   # row rotation
+            f.write(f"{B}\n")   # column rotation
+            f.write(f"{E}\n")   # pixel height
+            f.write(f"{C}\n")   # X center of upper-left pixel
+            f.write(f"{F}\n")   # Y center of upper-left pixel
+
     except Exception as e:
         st.warning(f"Could not write worldfile: {e}")
 
     return png_path
+
