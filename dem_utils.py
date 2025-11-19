@@ -11,24 +11,22 @@ import streamlit as st
 
 
 # ---------------------------------------------------------
-# Clean and fix invalid polygon geometries
+# Clean and fix polygon geometries
 # ---------------------------------------------------------
 def clean_geometry(geom):
+    """Fix invalid geometries and ensure closed rings."""
     if geom is None:
         return None
 
-    # Fix invalid geometry
     if not geom.is_valid:
         geom = make_valid(geom)
 
-    # Extract polygons if GeometryCollection
     if geom.geom_type == "GeometryCollection":
         polys = [g for g in geom if g.geom_type == "Polygon"]
         if not polys:
             return None
         geom = unary_union(polys)
 
-    # Ensure polygon rings are closed
     if geom.geom_type == "Polygon":
         ext = geom.exterior
         coords = list(ext.coords)
@@ -45,17 +43,18 @@ def clean_geometry(geom):
 def safe_bbox(geom):
     minx, miny, maxx, maxy = geom.bounds
     return (
-        min(minx, maxx),  # west
-        min(miny, maxy),  # south
-        max(minx, maxx),  # east
-        max(miny, maxy),  # north
+        min(minx, maxx),  # west  (lon_min)
+        min(miny, maxy),  # south (lat_min)
+        max(minx, maxx),  # east  (lon_max)
+        max(miny, maxy),  # north (lat_max)
     )
 
 
 # ---------------------------------------------------------
-# Download DEM from OpenTopography
+# DEM download with retry + fallback
 # ---------------------------------------------------------
 def download_dem_from_opentopo(bbox, out_path="dem.tif"):
+    """Download SRTM from OpenTopography with retries."""
     if "OPENTOPO_API_KEY" not in st.secrets:
         st.error("Missing OPENTOPO_API_KEY in Streamlit secrets.")
         return None
@@ -64,154 +63,132 @@ def download_dem_from_opentopo(bbox, out_path="dem.tif"):
     west, south, east, north = bbox
 
     urls = [
-        # Main OpenTopo server
-        (
-            "https://portal.opentopography.org/API/globaldem?"
-            f"demtype=SRTMGL1&south={south}&north={north}"
-            f"&west={west}&east={east}&outputFormat=GTiff"
-            f"&API_Key={api_key}"
-        ),
-        # Fallback US West mirror (fast)
-        (
-            "https://portal-opentopography-us-west-2.s3.us-west-2.amazonaws.com/API/globaldem?"
-            f"demtype=SRTMGL1&south={south}&north={north}"
-            f"&west={west}&east={east}&outputFormat=GTiff"
-            f"&API_Key={api_key}"
-        ),
+        f"https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south={south}&north={north}&west={west}&east={east}&outputFormat=GTiff&API_Key={api_key}",
+        f"https://portal-opentopography-us-west-2.s3.us-west-2.amazonaws.com/API/globaldem?demtype=SRTMGL1&south={south}&north={north}&west={west}&east={east}&outputFormat=GTiff&API_Key={api_key}",
     ]
 
-    for attempt in range(1, 7):  # 6 total attempts
+    for attempt in range(1, 6):
         for url in urls:
             try:
-                st.write(f"Attempt {attempt}/6 → DEM URL:", url)
+                st.write(f"DEM attempt {attempt}: {url}")
                 r = requests.get(url, timeout=15)
-
                 if r.status_code == 200:
                     with open(out_path, "wb") as f:
                         f.write(r.content)
                     return out_path
                 else:
-                    st.write(f"Server responded {r.status_code}, trying fallback…")
-
+                    st.write(f"Server responded {r.status_code}")
             except Exception as e:
-                st.write(f"Download attempt failed: {e}")
+                st.write(f"Attempt failed: {e}")
 
         st.write("Retrying…")
 
     st.error("All DEM download attempts failed.")
     return None
 
+
 # ---------------------------------------------------------
-# Process AOI → Clip DEM → Calculate Slope → Classify → Save PNG + PGW + DEBUG OUTPUT
+# Main Slope Processor
 # ---------------------------------------------------------
 def process_slope_raster(geom):
 
     geom = clean_geometry(geom)
     if geom is None:
-        st.error("Geometry invalid even after cleaning.")
+        st.error("Invalid geometry.")
         return None
 
     bbox = safe_bbox(geom)
 
-    dem_path = download_dem_from_opentopo(bbox, out_path="dem.tif")
+    dem_path = download_dem_from_opentopo(bbox)
     if dem_path is None:
         return None
 
-    # Clip DEM with AOI
+    # ---- Clip DEM ----
     try:
         with rasterio.open(dem_path) as src:
             dem_img, out_transform = mask(src, [mapping(geom)], crop=True)
             nodata = src.nodata
     except Exception as e:
-        st.error(f"Failed to clip DEM: {e}")
+        st.error(f"DEM clip failed: {e}")
         return None
 
     dem = dem_img[0].astype("float32")
 
-    # Replace nodata with mean of valid values
+    # ---- Handle NODATA ----
     if nodata is not None:
         dem[dem == nodata] = np.nan
-
     if np.isnan(dem).all():
-        st.error("DEM after clipping contains only nodata!")
+        st.error("DEM contains only nodata after clipping.")
         return None
+    dem[np.isnan(dem)] = np.nanmean(dem)
 
-    if np.isnan(dem).any():
-        dem[np.isnan(dem)] = np.nanmean(dem)
-
-    # ----- Slope computation -----
+    # ---- Slope computation ----
     gy, gx = np.gradient(dem)
     slope = np.degrees(np.arctan(np.sqrt(gx**2 + gy**2)))
 
-    # ----- Classify slope in 8-degree bins -----
+    # ---- Classification (8° bins) ----
     classes = np.floor(slope / 8).astype(int)
-    classes[classes < 0] = 0
-    classes[classes > 8] = 8  # Cap >64° to class 8
+    classes = np.clip(classes, 0, 8)
 
-    # ----- Fixed Color Table -----
     COLOR_TABLE = [
-        (173, 216, 230),  # 0: Light Blue
-        (144, 238, 144),  # 1: Light Green
-        (0, 100, 0),      # 2: Dark Green
+        (173, 216, 230),  # 0: Light blue
+        (144, 238, 144),  # 1: Light green
+        (0, 100, 0),      # 2: Dark green
         (255, 255, 102),  # 3: Yellow
         (255, 165, 0),    # 4: Orange
         (255, 0, 0),      # 5: Red
-        (139, 0, 0),      # 6: Dark Red
+        (139, 0, 0),      # 6: Dark red
         (128, 0, 128),    # 7: Purple
         (0, 0, 0),        # 8: Black
     ]
 
-    # ----- Build RGB raster -----
     h, w = classes.shape
     rgb = np.zeros((h, w, 3), dtype=np.uint8)
-
     for i, color in enumerate(COLOR_TABLE):
         rgb[classes == i] = color
 
-    # Save slope.png
+    # ---- Save PNG ----
     png_path = "slope.png"
     Image.fromarray(rgb).save(png_path, "PNG")
 
     # ---------------------------------------------------------
-    # CORRECT WORLD FILE USING array_bounds (BEST POSSIBLE FIX)
+    # PERFECT BOUNDS FIX
+    # Create a temp raster in memory to get correct bounds
     # ---------------------------------------------------------
-    # Compute correct geographic bounds
-    bounds = array_bounds(h, w, out_transform)
-    # BUT array_bounds returns (minY, minX, maxY, maxX) NOT (bottom,left,top,right)
-    minY, minX, maxY, maxX = bounds
-    
-    pixel_width = out_transform.a      # +0.000277777
-    pixel_height = out_transform.e     # -0.000277777
-    
-    # Worldfile wants upper-left pixel CENTER:
+    with rasterio.MemoryFile() as mem:
+        with mem.open(
+            driver="GTiff",
+            height=h,
+            width=w,
+            count=1,
+            dtype="float32",
+            transform=out_transform,
+        ) as tmp:
+            tmp.write(dem, 1)
+            minX, minY, maxX, maxY = tmp.bounds  # ALWAYS CORRECT
+
+    # ---- Write worldfile ----
+    pixel_width = out_transform.a        # +value
+    pixel_height = out_transform.e       # -value
+
     X_center = minX + (pixel_width / 2)
     Y_center = maxY + (pixel_height / 2)
-    
+
     with open("slope.pgw", "w") as wf:
-        wf.write(f"{pixel_width}\n")     # line 1
-        wf.write("0.0\n")                # line 2
-        wf.write("0.0\n")                # line 3
-        wf.write(f"{pixel_height}\n")    # line 4
-        wf.write(f"{X_center}\n")        # line 5  (lon)
-        wf.write(f"{Y_center}\n")        # line 6  (lat)
+        wf.write(f"{pixel_width}\n")
+        wf.write("0.0\n")
+        wf.write("0.0\n")
+        wf.write(f"{pixel_height}\n")
+        wf.write(f"{X_center}\n")
+        wf.write(f"{Y_center}\n")
 
-    # ---------------------------------------------------------
-    # DEBUG DEBUG DEBUG — REQUIRED TO SOLVE YOUR ISSUE
-    # ---------------------------------------------------------
-    st.warning("DEBUG MODE: Download slope files and send to me")
-
+    # ---- Debug info ----
     st.write("Transform:", out_transform)
-    st.write("Bounds (bottom, left, top, right):", bounds)
-    st.write("PNG shape (h, w, 3):", rgb.shape)
-    st.write("Slope class min/max:", int(classes.min()), int(classes.max()))
+    st.write("Correct bounds:", (minX, minY, maxX, maxY))
+    st.write("PNG shape:", rgb.shape)
+    st.write("Slope classes:", (int(classes.min()), int(classes.max())))
 
-    with open("slope.png", "rb") as f:
-        st.download_button("Download slope.png (debug)", f, file_name="slope.png")
+    st.download_button("Download slope.png (debug)", open("slope.png", "rb"), "slope.png")
+    st.download_button("Download slope.pgw (debug)", open("slope.pgw", "rb"), "slope.pgw")
 
-    with open("slope.pgw", "rb") as f:
-        st.download_button("Download slope.pgw (debug)", f, file_name="slope.pgw")
-
-    # return PNG path
     return png_path
-
-
