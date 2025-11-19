@@ -5,7 +5,7 @@ from shapely.geometry import Polygon
 from dem_utils import detect_flat_areas_from_polygon
 from streamlit_js_eval import streamlit_js_eval
 import simplekml
-
+from folium.plugins import Draw
 # ==========================
 # PAGE CONFIG
 # ==========================
@@ -109,7 +109,20 @@ with tabs[0]:
         m = leafmap.Map(center=[11.0, 78.0], zoom=7)
 
     m.add_basemap("HYBRID")
-    m.add_draw_control(rectangle=True, polygon=True, marker=False, circle=False, polyline=False)
+    draw = Draw(
+        draw_options={
+            "polyline": False,
+            "rectangle": True,
+            "polygon": True,
+            "circle": False,
+            "marker": False,
+            "circlemarker": False,
+        },
+        edit_options={"edit": True, "remove": True},
+    )
+    
+    draw.add_to(m)
+
 
     m.to_streamlit(height=600, css_class="mobile-map")
 
@@ -203,3 +216,4 @@ with tabs[1]:
             m2.add_legend(title="Legend", legend_dict=legend)
 
             m2.to_streamlit(height=600)
+
