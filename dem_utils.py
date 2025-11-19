@@ -61,8 +61,13 @@ def download_dem(bbox, out_path="dem.tif"):
     west, south, east, north = bbox
 
     urls = [
-        f"https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south={south}&north={north}&west={west}&east={east}&outputFormat=GTiff&API_Key={api_key}",
-        f"https://portal-opentopography-us-west-2.s3.us-west-2.amazonaws.com/API/globaldem?demtype=SRTMGL1&south={south}&north={north}&west={west}&east={east}&outputFormat=GTiff&API_Key={api_key}",
+        f"https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1"
+        f"&south={south}&north={north}&west={west}&east={east}"
+        f"&outputFormat=GTiff&API_Key={api_key}",
+
+        f"https://portal-opentopography-us-west-2.s3.us-west-2.amazonaws.com/API/globaldem?"
+        f"demtype=SRTMGL1&south={south}&north={north}&west={west}&east={east}"
+        f"&outputFormat=GTiff&API_Key={api_key}",
     ]
 
     for attempt in range(1, 6):
@@ -76,6 +81,7 @@ def download_dem(bbox, out_path="dem.tif"):
                     return out_path
             except Exception as e:
                 st.write(f"Failed: {e}")
+
         st.write("Retrying...")
 
     st.error("DEM download failed.")
@@ -83,7 +89,7 @@ def download_dem(bbox, out_path="dem.tif"):
 
 
 # ---------------------------------------------------------
-# MAIN SLOPE PROCESSOR (returns base64 PNG + correct bounds)
+# MAIN SLOPE PROCESSOR (base64 PNG + correct bounds)
 # ---------------------------------------------------------
 def process_slope(geom):
 
@@ -99,7 +105,7 @@ def process_slope(geom):
 
     # ---- CLIP DEM ----
     try:
-        with raster.io.open(dem_path) as src:
+        with rasterio.open(dem_path) as src:
             dem_img, transform = mask(src, [mapping(geom)], crop=True)
             nodata = src.nodata
     except Exception as e:
@@ -124,7 +130,6 @@ def process_slope(geom):
     # -------- CLASSIFY --------
     classes = np.clip((slope // 8).astype(int), 0, 8)
 
-    # -------- COLOR TABLE --------
     COLORS = [
         (173, 216, 230),  # 0 light blue
         (144, 238, 144),  # 1 light green
@@ -139,8 +144,8 @@ def process_slope(geom):
 
     h, w = classes.shape
     rgb = np.zeros((h, w, 3), dtype=np.uint8)
-    for i, color in enumerate(COLORS):
-        rgb[classes == i] = color
+    for i, c in enumerate(COLORS):
+        rgb[classes == i] = c
 
     # -------- BASE64 PNG --------
     buffer = BytesIO()
@@ -149,8 +154,7 @@ def process_slope(geom):
 
     # -------- CORRECT MANUAL BOUNDS (FINAL FIX) --------
     pixel_width = transform.a
-    pixel_height = transform.e  # negative
-
+    pixel_height = transform.e  # NEGATIVE
     origin_x = transform.c
     origin_y = transform.f
 
@@ -158,7 +162,7 @@ def process_slope(geom):
     max_lon = origin_x + pixel_width * w
 
     max_lat = origin_y
-    min_lat = origin_y + pixel_height * h
+    min_lat = origin_y + pixel_height * h  # pixel_height is negative
 
     return {
         "data_url": f"data:image/png;base64,{img_b64}",
