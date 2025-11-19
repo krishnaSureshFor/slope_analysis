@@ -63,30 +63,43 @@ def download_dem_from_opentopo(bbox, out_path="dem.tif"):
     api_key = st.secrets["OPENTOPO_API_KEY"]
     west, south, east, north = bbox
 
-    url = (
-        "https://portal.opentopography.org/API/globaldem?"
-        f"demtype=SRTMGL1&south={south}&north={north}"
-        f"&west={west}&east={east}&outputFormat=GTiff"
-        f"&API_Key={api_key}"
-    )
+    urls = [
+        # Main OpenTopo server
+        (
+            "https://portal.opentopography.org/API/globaldem?"
+            f"demtype=SRTMGL1&south={south}&north={north}"
+            f"&west={west}&east={east}&outputFormat=GTiff"
+            f"&API_Key={api_key}"
+        ),
+        # Fallback US West mirror (fast)
+        (
+            "https://portal-opentopography-us-west-2.s3.us-west-2.amazonaws.com/API/globaldem?"
+            f"demtype=SRTMGL1&south={south}&north={north}"
+            f"&west={west}&east={east}&outputFormat=GTiff"
+            f"&API_Key={api_key}"
+        ),
+    ]
 
-    st.write("DEM URL:", url)
+    for attempt in range(1, 7):  # 6 total attempts
+        for url in urls:
+            try:
+                st.write(f"Attempt {attempt}/6 → DEM URL:", url)
+                r = requests.get(url, timeout=15)
 
-    try:
-        r = requests.get(url, timeout=90)
-    except Exception as e:
-        st.error(f"DEM request failed: {e}")
-        return None
+                if r.status_code == 200:
+                    with open(out_path, "wb") as f:
+                        f.write(r.content)
+                    return out_path
+                else:
+                    st.write(f"Server responded {r.status_code}, trying fallback…")
 
-    if r.status_code != 200:
-        st.error(f"OpenTopo Error {r.status_code}: {r.text}")
-        return None
+            except Exception as e:
+                st.write(f"Download attempt failed: {e}")
 
-    with open(out_path, "wb") as f:
-        f.write(r.content)
+        st.write("Retrying…")
 
-    return out_path
-
+    st.error("All DEM download attempts failed.")
+    return None
 
 # ---------------------------------------------------------
 # Process AOI → Clip DEM → Calculate Slope → Classify → Save PNG + PGW + DEBUG OUTPUT
@@ -198,3 +211,4 @@ def process_slope_raster(geom):
 
     # return PNG path
     return png_path
+
