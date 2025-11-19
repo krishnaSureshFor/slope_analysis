@@ -60,9 +60,42 @@ if geom is not None and st.button("Generate Slope Map"):
             interactive=True,
             cross_origin=False,
         ).add_to(m2)
+        # -----------------------------
+        # Add slope legend
+        # -----------------------------
+        legend_html = """
+        <div style="
+            position: fixed;
+            bottom: 25px;
+            left: 25px;
+            z-index: 9999;
+            background-color: white;
+            padding: 10px 15px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+            max-width: 180px;
+            font-size: 14px;
+        ">
+        <b>Slope classes (°)</b><br>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#ADD8E6;"></div>&nbsp;0-8°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#90EE90;"></div>&nbsp;8-16°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#006400;"></div>&nbsp;16-24°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#FFFF66;"></div>&nbsp;24-32°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#FFA500;"></div>&nbsp;32-40°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#FF0000;"></div>&nbsp;40-48°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#8B0000;"></div>&nbsp;48-56°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#800080;"></div>&nbsp;56-64°</div>
+        <div style="display:flex;align-items:center;"><div style="width:18px;height:18px;background:#000;"></div>&nbsp;>64°</div>
+        </div>
+        """
+        
+        m2.get_root().html.add_child(folium.Element(legend_html))
+
 
         # Add AOI boundary
         gdf = gpd.GeoDataFrame(geometry=[geom], crs="EPSG:4326")
         m2.add_gdf(gdf, layer_name="AOI")
 
         m2.to_streamlit(height=650)
+
