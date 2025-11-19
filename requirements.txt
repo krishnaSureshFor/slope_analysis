@@ -10,3 +10,4 @@ leafmap
 folium
 streamlit_js_eval
 Pillow
+requests
