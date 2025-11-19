@@ -55,13 +55,15 @@ if geom is not None and st.button("Generate Slope Map"):
         folium.raster_layers.ImageOverlay(
             image=result["data_url"],
             bounds=result["bounds"],
-            opacity=0.75,
+            opacity=1.0,            # FULL opacity (max visibility)
             interactive=True,
             cross_origin=False,
         ).add_to(m2)
+
 
         # Add boundary
         gdf = gpd.GeoDataFrame(geometry=[geom], crs="EPSG:4326")
         m2.add_gdf(gdf, layer_name="AOI")
 
         m2.to_streamlit(height=600)
+
