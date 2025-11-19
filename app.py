@@ -1,126 +1,131 @@
 import streamlit as st
 import leafmap.foliumap as leafmap
 import geopandas as gpd
+from shapely.geometry import shape
 from folium.plugins import Draw
 from streamlit_js_eval import streamlit_js_eval
-from dem_utils import detect_flat_areas_from_polygon, clean_geometry
-from shapely.geometry import shape
-import json
+import simplekml
+from dem_utils import process_slope_raster, clean_geometry
 
 
-st.set_page_config(page_title="Plain Detector", layout="wide")
+# PAGE SETTINGS
+st.set_page_config(page_title="Slope Analysis", layout="wide")
 
-# ======================================
-# Mobile style
-# ======================================
+
+# MOBILE CSS
 st.markdown("""
 <style>
-.main .block-container { padding:0; }
-.mobile-map { height:85vh !important; }
-.stButton>button { width:100%; padding:1rem; font-size:1.1rem; }
+.main .block-container { padding: 0; }
+.mobile-map { height: 85vh !important; }
+.stButton>button { width: 100%; padding: 1rem; font-size: 1.1rem; }
 .action-bar {
-    position: fixed; bottom:0; left:0; right:0;
-    background:white; padding:10px;
-    border-top:2px solid #ccc;
-    box-shadow:0 -2px 8px rgba(0,0,0,0.2);
-    z-index:9999;
+  position: fixed; bottom:0; left:0; right:0;
+  background:white; padding:10px;
+  border-top:2px solid #ccc;
+  box-shadow:0 -2px 8px rgba(0,0,0,0.2);
+  z-index:9999;
 }
 </style>
 """, unsafe_allow_html=True)
 
-tabs = st.tabs(["📱 Draw", "📂 Upload KML"])
+
+tabs = st.tabs(["📂 Upload Area", "📱 Draw & Extract"])
 
 
-# ============================================================
-# TAB 1 – Draw polygon
-# ============================================================
+# =========================================================
+# TAB 1 — UPLOAD KML → SHOW SLOPE MAP
+# =========================================================
 with tabs[0]:
 
-    gps_btn = st.button("📍 Get GPS Location")
+    st.subheader("Upload KML to Generate Slope Map")
 
-    user_lat = None
-    user_lon = None
+    up = st.file_uploader("Upload KML", type=["kml"])
 
-    if gps_btn:
-        loc = streamlit_js_eval(
-            js_expressions=[
-                "navigator.geolocation.getCurrentPosition((p)=>p.coords.latitude)",
-                "navigator.geolocation.getCurrentPosition((p)=>p.coords.longitude)"
-            ]
-        )
-        if loc and len(loc) == 2:
-            user_lat, user_lon = loc
-            st.success("GPS fetched!")
+    if up:
+        open("uploaded.kml", "wb").write(up.read())
 
-    if user_lat:
-        m = leafmap.Map(center=[user_lat, user_lon], zoom=17)
-        m.add_circle_marker([user_lat, user_lon], radius=6,
-                            color="#0066FF", fill=True, fill_opacity=1.0)
-    else:
-        m = leafmap.Map(center=[11, 78], zoom=7)
+        gdf = gpd.read_file("uploaded.kml", driver="KML")
+        geom = clean_geometry(gdf.geometry[0])
 
+        st.info("Processing slope…")
+        path = process_slope_raster(geom)
+
+        if path:
+            st.success("Slope map generated")
+
+            m = leafmap.Map(center=[geom.centroid.y, geom.centroid.x], zoom=13)
+            m.add_basemap("HYBRID")
+            m.add_image("slope.png", "slope.pgw", opacity=0.8, layer_name="Slope Map")
+            m.add_gdf(gdf, layer_name="Boundary")
+
+            m.to_streamlit(height=600)
+
+
+# =========================================================
+# TAB 2 — DRAW POLYGON → PROCESS → DRAW ON SLOPE → EXPORT KML
+# =========================================================
+with tabs[1]:
+
+    st.subheader("Draw Area + Extract Slope + Export KML")
+
+    st.markdown("### Step 1 — Draw an area on map")
+
+    m = leafmap.Map(center=[11, 78], zoom=7)
     m.add_basemap("HYBRID")
 
     draw = Draw(
         draw_options={
             "polygon": True,
             "rectangle": True,
-            "polyline": False,
             "circle": False,
-            "marker": False,
-            "circlemarker": False
-        },
-        edit_options={"edit": True, "remove": True},
+            "marker": False
+        }
     )
     draw.add_to(m)
 
     m.to_streamlit(height=600, css_class="mobile-map")
 
     st.markdown("<div class='action-bar'>", unsafe_allow_html=True)
-    process = st.button("⚙️ Process DEM")
+    btn = st.button("⚙️ Process Slope for Drawn Area")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    if process:
+    if btn:
         last = m.get_last_draw()
 
         if last is None:
-            st.error("Draw an area first!")
+            st.error("Please draw an area first.")
         else:
-            geom = shape(last["geometry"])
-            geom = clean_geometry(geom)
+            geom = clean_geometry(shape(last["geometry"]))
 
-            out = detect_flat_areas_from_polygon(geom)
+            st.info("Generating slope map…")
+            path = process_slope_raster(geom)
 
-            if out is None:
-                st.error("DEM request failed")
-            else:
-                st.success("Done!")
+            if path:
+                st.success("Slope generated. Now draw polygon on slope map.")
 
-                with open(out, "rb") as f:
-                    st.download_button("⬇️ Download KML", f, "flat_areas.kml")
+                m2 = leafmap.Map(center=[geom.centroid.y, geom.centroid.x], zoom=13)
+                m2.add_basemap("HYBRID")
+                m2.add_image("slope.png", "slope.pgw", opacity=0.8, layer_name="Slope Map")
 
-                # Preview
-                rmap = leafmap.Map(center=[geom.centroid.y, geom.centroid.x], zoom=15)
-                rmap.add_basemap("HYBRID")
-                rmap.add_gdf(gpd.GeoDataFrame(geometry=[geom]), "Boundary")
-                rmap.add_gdf(gpd.read_file(out, driver="KML"), "Flat")
-                rmap.to_streamlit(height=600)
+                draw2 = Draw(
+                    draw_options={
+                        "polygon": True,
+                        "rectangle": True,
+                        "circle": False,
+                    }
+                )
+                draw2.add_to(m2)
 
+                m2.to_streamlit(height=600)
 
-# ============================================================
-# TAB 2 – Upload KML
-# ============================================================
-with tabs[1]:
+                if st.button("Export Drawn Polygon as KML"):
+                    last2 = m2.get_last_draw()
+                    if last2:
+                        g = shape(last2["geometry"])
+                        kml = simplekml.Kml()
+                        pol = kml.newpolygon()
+                        pol.outerboundaryis = list(g.exterior.coords)
+                        kml.save("output.kml")
 
-    up = st.file_uploader("Upload KML", type=["kml"])
-
-    if up:
-        open("uploaded.kml", "wb").write(up.read())
-        gdf = gpd.read_file("uploaded.kml", driver="KML")
-        geom = clean_geometry(gdf.geometry[0])
-
-        if st.button("Process Uploaded KML"):
-            out = detect_flat_areas_from_polygon(geom)
-            if out:
-                with open(out, "rb") as f:
-                    st.download_button("Download Result", f, "flat_areas.kml")
+                        st.success("KML exported.")
+                        st.download_button("Download KML", open("output.kml", "rb"), "output.kml")
