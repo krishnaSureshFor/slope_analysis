@@ -9,11 +9,10 @@ from PIL import Image
 import streamlit as st
 import base64
 from io import BytesIO
-from rasterio.transform import array_bounds
 
 
 # ---------------------------------------------------------
-# Fix polygon geometry
+# Fix polygon
 # ---------------------------------------------------------
 def clean_geometry(geom):
     if geom is None:
@@ -38,7 +37,7 @@ def clean_geometry(geom):
 
 
 # ---------------------------------------------------------
-# Proper bounding box
+# Safe bounding box
 # ---------------------------------------------------------
 def safe_bbox(geom):
     minx, miny, maxx, maxy = geom.bounds
@@ -51,11 +50,11 @@ def safe_bbox(geom):
 
 
 # ---------------------------------------------------------
-# DEM downloader with fallback
+# DEM DOWNLOAD
 # ---------------------------------------------------------
 def download_dem(bbox, out_path="dem.tif"):
     if "OPENTOPO_API_KEY" not in st.secrets:
-        st.error("Missing OPENTOPO_API_KEY in secrets.")
+        st.error("Missing OPENTOPO_API_KEY in Streamlit secrets.")
         return None
 
     api_key = st.secrets["OPENTOPO_API_KEY"]
@@ -77,7 +76,6 @@ def download_dem(bbox, out_path="dem.tif"):
                     return out_path
             except Exception as e:
                 st.write(f"Failed: {e}")
-
         st.write("Retrying...")
 
     st.error("DEM download failed.")
@@ -85,7 +83,7 @@ def download_dem(bbox, out_path="dem.tif"):
 
 
 # ---------------------------------------------------------
-# MAIN SLOPE PROCESSOR (returns base64 PNG + bounds)
+# MAIN SLOPE PROCESSOR (returns base64 PNG + correct bounds)
 # ---------------------------------------------------------
 def process_slope(geom):
 
@@ -95,14 +93,13 @@ def process_slope(geom):
         return None
 
     bbox = safe_bbox(geom)
-
     dem_path = download_dem(bbox)
     if dem_path is None:
         return None
 
-    # Clip DEM
+    # ---- CLIP DEM ----
     try:
-        with rasterio.open(dem_path) as src:
+        with raster.io.open(dem_path) as src:
             dem_img, transform = mask(src, [mapping(geom)], crop=True)
             nodata = src.nodata
     except Exception as e:
@@ -113,19 +110,21 @@ def process_slope(geom):
 
     if nodata is not None:
         dem[dem == nodata] = np.nan
+
     if np.isnan(dem).all():
         st.error("DEM contains only nodata.")
         return None
+
     dem[np.isnan(dem)] = np.nanmean(dem)
 
-    # Slope
+    # -------- SLOPE --------
     gy, gx = np.gradient(dem)
     slope = np.degrees(np.arctan(np.hypot(gx, gy)))
 
-    # Classify (8-degree bins)
+    # -------- CLASSIFY --------
     classes = np.clip((slope // 8).astype(int), 0, 8)
 
-    # Color table
+    # -------- COLOR TABLE --------
     COLORS = [
         (173, 216, 230),  # 0 light blue
         (144, 238, 144),  # 1 light green
@@ -143,16 +142,25 @@ def process_slope(geom):
     for i, color in enumerate(COLORS):
         rgb[classes == i] = color
 
-    # Base64 encode PNG
+    # -------- BASE64 PNG --------
     buffer = BytesIO()
     Image.fromarray(rgb).save(buffer, "PNG")
-    img_bytes = buffer.getvalue()
-    img_b64 = base64.b64encode(img_bytes).decode()
+    img_b64 = base64.b64encode(buffer.getvalue()).decode()
 
-    # Correct bounds
-    minY, minX, maxY, maxX = array_bounds(h, w, transform)
+    # -------- CORRECT MANUAL BOUNDS (FINAL FIX) --------
+    pixel_width = transform.a
+    pixel_height = transform.e  # negative
+
+    origin_x = transform.c
+    origin_y = transform.f
+
+    min_lon = origin_x
+    max_lon = origin_x + pixel_width * w
+
+    max_lat = origin_y
+    min_lat = origin_y + pixel_height * h
 
     return {
         "data_url": f"data:image/png;base64,{img_b64}",
-        "bounds": [[minY, minX], [maxY, maxX]],
+        "bounds": [[min_lat, min_lon], [max_lat, max_lon]],
     }
