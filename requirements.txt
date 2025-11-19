@@ -1,6 +1,5 @@
 streamlit
 geopandas
-requests
 rasterio
 numpy
 shapely
@@ -10,3 +9,4 @@ simplekml
 leafmap
 folium
 streamlit_js_eval
+Pillow
