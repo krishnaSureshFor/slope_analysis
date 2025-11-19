@@ -1,0 +1,12 @@
+streamlit
+geopandas
+requests
+rasterio
+numpy
+shapely
+fiona
+scikit-image
+simplekml
+leafmap
+folium
+streamlit_js_eval
